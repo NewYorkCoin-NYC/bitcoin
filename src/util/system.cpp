@@ -68,7 +68,7 @@
 // Application startup time (used for uptime calculation)
 const int64_t nStartupTime = GetTime();
 
-const char * const BITCOIN_CONF_FILENAME = "bitcoin.conf";
+const char * const BITCOIN_CONF_FILENAME = "newyorkcoin.conf";
 
 ArgsManager gArgs;
 
@@ -675,7 +675,7 @@ static std::string FormatException(const std::exception* pex, const char* pszThr
     char pszModule[MAX_PATH] = "";
     GetModuleFileNameA(nullptr, pszModule, sizeof(pszModule));
 #else
-    const char* pszModule = "bitcoin";
+    const char* pszModule = "newyorkcoin";
 #endif
     if (pex)
         return strprintf(
@@ -697,10 +697,10 @@ fs::path GetDefaultDataDir()
     // Windows < Vista: C:\Documents and Settings\Username\Application Data\Bitcoin
     // Windows >= Vista: C:\Users\Username\AppData\Roaming\Bitcoin
     // Mac: ~/Library/Application Support/Bitcoin
-    // Unix: ~/.bitcoin
+    // Unix: ~/.newyorkcoin
 #ifdef WIN32
     // Windows
-    return GetSpecialFolderPath(CSIDL_APPDATA) / "Bitcoin";
+    return GetSpecialFolderPath(CSIDL_APPDATA) / "Newyorkcoin";
 #else
     fs::path pathRet;
     char* pszHome = getenv("HOME");
@@ -710,10 +710,10 @@ fs::path GetDefaultDataDir()
         pathRet = fs::path(pszHome);
 #ifdef MAC_OSX
     // Mac
-    return pathRet / "Library/Application Support/Bitcoin";
+    return pathRet / "Library/Application Support/Newyorkcoin";
 #else
     // Unix
-    return pathRet / ".bitcoin";
+    return pathRet / ".newyorkcoin";
 #endif
 #endif
 }
@@ -1241,6 +1241,44 @@ int ScheduleBatchPriority()
 #else
     return 1;
 #endif
+}
+
+static const long hextable[] = {
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 10-19
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 30-39
+    -1, -1, -1, -1, -1, -1, -1, -1,  0,  1,
+     2,  3,  4,  5,  6,  7,  8,  9, -1, -1,         // 50-59
+    -1, -1, -1, -1, -1, 10, 11, 12, 13, 14,
+    15, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 70-79
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, 10, 11, 12,         // 90-99
+    13, 14, 15, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 110-109
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 130-139
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 150-159
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 170-179
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 190-199
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 210-219
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,         // 230-239
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1
+};
+
+long hex2long(const char* hexString)
+{
+    long ret = 0;
+    while (*hexString && ret >= 0) {
+        ret = (ret << 4) | hextable[(uint8_t)*hexString++];
+    }
+    return ret;
 }
 
 namespace util {

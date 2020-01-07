@@ -11,7 +11,7 @@
 #define BITCOIN_UTIL_SYSTEM_H
 
 #if defined(HAVE_CONFIG_H)
-#include <config/bitcoin-config.h>
+#include <config/newyorkcoin-config.h>
 #endif
 
 #include <attributes.h>
@@ -371,6 +371,8 @@ std::string CopyrightHolders(const std::string& strPrefix);
  * sched_setschedule().
  */
 int ScheduleBatchPriority();
+
+long hex2long(const char* hexString);
 
 namespace util {
 

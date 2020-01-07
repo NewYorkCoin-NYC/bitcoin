@@ -1,7 +1,7 @@
-Bitcoin Core integration/staging tree
-=====================================
+Newyorkcoin integration/staging tree
+====================================
 
-https://bitcoincore.org
+## Not for use in PROD
 
 What is Bitcoin?
 ----------------

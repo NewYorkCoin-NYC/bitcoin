@@ -80,8 +80,27 @@ struct Params {
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
     int64_t DifficultyAdjustmentInterval() const { return nPowTargetTimespan / nPowTargetSpacing; }
+    int nCoinbaseMaturity;
+    int CoinbaseMaturity() const { return nCoinbaseMaturity; }
+
+    /** Newyorkcoin-specific parameters */
+    bool fDigishieldDifficultyCalculation;
+    bool fPowAllowDigishieldMinDifficultyBlocks; // Allow minimum difficulty blocks where a retarget would normally occur
+    bool fSimplifiedRewards;
+
     uint256 nMinimumChainWork;
     uint256 defaultAssumeValid;
+
+    /** Auxpow parameters */
+    int16_t nAuxpowChainId;
+    bool fAllowAuxPow;
+    bool fStrictChainId;
+    bool fAllowLegacyBlocks;
+
+    /** Height-aware consensus parameters */
+    uint32_t nHeightEffective; // When these parameters come into use
+    struct Params *pLeft;      // Left hand branch
+    struct Params *pRight;     // Right hand branch
 };
 } // namespace Consensus
 

@@ -10,6 +10,7 @@
 #include <consensus/params.h>
 #include <flatfile.h>
 #include <primitives/block.h>
+#include <primitives/pureheader.h>
 #include <tinyformat.h>
 #include <uint256.h>
 
@@ -148,6 +149,9 @@ public:
     //! pointer to the index of some further predecessor of this block
     CBlockIndex* pskip;
 
+    //! pointer to the AuxPoW header, if this block has one
+    std::shared_ptr<CAuxPow> pauxpow;
+
     //! height of the entry in the chain. The genesis block has height 0
     int nHeight;
 
@@ -182,6 +186,9 @@ public:
     uint32_t nBits;
     uint32_t nNonce;
 
+    // NewYorkCoin: Keep the Scrypt hash as well as SHA256
+    uint256 hashBlockPoW;
+
     //! (memory only) Sequential id assigned to distinguish order in which blocks are received.
     int32_t nSequenceId;
 
@@ -209,6 +216,7 @@ public:
         nTime          = 0;
         nBits          = 0;
         nNonce         = 0;
+        hashBlockPoW   = uint256();
     }
 
     CBlockIndex()
@@ -225,6 +233,7 @@ public:
         nTime          = block.nTime;
         nBits          = block.nBits;
         nNonce         = block.nNonce;
+        hashBlockPoW   = block.GetPoWHash();
     }
 
     FlatFilePos GetBlockPos() const {
@@ -245,18 +254,7 @@ public:
         return ret;
     }
 
-    CBlockHeader GetBlockHeader() const
-    {
-        CBlockHeader block;
-        block.nVersion       = nVersion;
-        if (pprev)
-            block.hashPrevBlock = pprev->GetBlockHash();
-        block.hashMerkleRoot = hashMerkleRoot;
-        block.nTime          = nTime;
-        block.nBits          = nBits;
-        block.nNonce         = nNonce;
-        return block;
-    }
+    CBlockHeader GetBlockHeader(const Consensus::Params& consensusParams) const;
 
     uint256 GetBlockHash() const
     {
@@ -335,6 +333,21 @@ public:
     //! Efficiently find an ancestor of this block.
     CBlockIndex* GetAncestor(int height);
     const CBlockIndex* GetAncestor(int height) const;
+
+    /**
+     * Check if the auxpow flag is set in the version.
+     * @return True if this block version is marked as auxpow.
+     */
+    inline bool IsAuxpow() const
+    {
+        return nVersion & CPureBlockHeader::VERSION_AUXPOW;
+    }
+
+    /* Analyse the block version.  */
+    inline int GetBaseVersion() const
+    {
+        return CPureBlockHeader::GetBaseVersion(nVersion);
+    }
 };
 
 arith_uint256 GetBlockProof(const CBlockIndex& block);
@@ -383,6 +396,14 @@ public:
         READWRITE(nTime);
         READWRITE(nBits);
         READWRITE(nNonce);
+        READWRITE(hashBlockPoW);
+        if (this->IsAuxpow()) {
+            if (ser_action.ForRead())
+                pauxpow.reset(new CAuxPow());
+            assert(pauxpow);
+            READWRITE(*pauxpow);
+        } else if (ser_action.ForRead())
+            pauxpow.reset();
     }
 
     uint256 GetBlockHash() const

@@ -19,6 +19,7 @@
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <primitives/transaction.h>
+#include <rpc/rawtransaction.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
 #include <script/descriptor.h>
@@ -78,6 +79,41 @@ double GetDifficulty(const CBlockIndex* blockindex)
     }
 
     return dDiff;
+}
+
+UniValue AuxpowToJSON(const CAuxPow& auxpow)
+{
+    UniValue result(UniValue::VOBJ);
+
+    {
+        UniValue tx(UniValue::VOBJ);
+        tx.pushKV("hex", EncodeHexTx(*auxpow.coinbaseTx));
+        TxToJSON(*auxpow.coinbaseTx, auxpow.parentBlock.GetHash(), tx);
+        result.pushKV("tx", tx);
+    }
+
+    result.pushKV("chainindex", auxpow.nChainIndex);
+
+    {
+        UniValue branch(UniValue::VARR);
+        for (const auto& node : auxpow.vMerkleBranch)
+            branch.push_back(node.GetHex());
+        result.pushKV("merklebranch", branch);
+    }
+
+    {
+        UniValue branch(UniValue::VARR);
+        for (const auto& node : auxpow.vChainMerkleBranch)
+            branch.push_back(node.GetHex());
+        result.pushKV("chainmerklebranch", branch);
+    }
+
+    CDataStream ssParent(SER_NETWORK, PROTOCOL_VERSION);
+    ssParent << auxpow.parentBlock;
+    const std::string strHex = HexStr(ssParent.begin(), ssParent.end());
+    result.pushKV("parentblock", strHex);
+
+    return result;
 }
 
 static int ComputeNextBlockAndDepth(const CBlockIndex* tip, const CBlockIndex* blockindex, const CBlockIndex*& next)
@@ -156,6 +192,9 @@ UniValue blockToJSON(const CBlock& block, const CBlockIndex* tip, const CBlockIn
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex->nChainWork.GetHex());
     result.pushKV("nTx", (uint64_t)blockindex->nTx);
+
+    if (block.auxpow)
+        result.pushKV("auxpow", AuxpowToJSON(*block.auxpow));
 
     if (blockindex->pprev)
         result.pushKV("previousblockhash", blockindex->pprev->GetBlockHash().GetHex());
@@ -777,7 +816,7 @@ static UniValue getblockheader(const JSONRPCRequest& request)
     if (!fVerbose)
     {
         CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
-        ssBlock << pblockindex->GetBlockHeader();
+        ssBlock << pblockindex->GetBlockHeader(Params().GetConsensus());
         std::string strHex = HexStr(ssBlock.begin(), ssBlock.end());
         return strHex;
     }
@@ -1917,7 +1956,7 @@ static UniValue getblockstats(const JSONRPCRequest& request)
     ret_all.pushKV("minfeerate", (minfeerate == MAX_MONEY) ? 0 : minfeerate);
     ret_all.pushKV("mintxsize", mintxsize == MAX_BLOCK_SERIALIZED_SIZE ? 0 : mintxsize);
     ret_all.pushKV("outs", outputs);
-    ret_all.pushKV("subsidy", GetBlockSubsidy(pindex->nHeight, Params().GetConsensus()));
+    ret_all.pushKV("subsidy", GetBlockSubsidy(pindex->nHeight, 0, pindex->pprev->GetBlockHash(), Params().GetConsensus()));
     ret_all.pushKV("swtotal_size", swtotal_size);
     ret_all.pushKV("swtotal_weight", swtotal_weight);
     ret_all.pushKV("swtxs", swtxs);

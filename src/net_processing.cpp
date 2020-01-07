@@ -2465,7 +2465,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         LogPrint(BCLog::NET, "getheaders %d to %s from peer=%d\n", (pindex ? pindex->nHeight : -1), hashStop.IsNull() ? "end" : hashStop.ToString(), pfrom->GetId());
         for (; pindex; pindex = ::ChainActive().Next(pindex))
         {
-            vHeaders.push_back(pindex->GetBlockHeader());
+            vHeaders.push_back(pindex->GetBlockHeader(chainparams.GetConsensus()));
             if (--nLimit <= 0 || pindex->GetBlockHash() == hashStop)
                 break;
         }
@@ -2684,6 +2684,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // If we end up treating this as a plain headers message, call that as well
         // without cs_main.
         bool fRevertToHeaderProcessing = false;
+        CDataStream vHeadersMsg(SER_NETWORK, PROTOCOL_VERSION);
 
         // Keep a CBlock for "optimistic" compactblock reconstructions (see
         // below)
@@ -2805,6 +2806,10 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
                 return true;
             } else {
                 // If this was an announce-cmpctblock, we want the same treatment as a header message
+                // Dirty hack to process as if it were just a headers message (TODO: move message handling into their own functions)
+                std::vector<CBlock> headers;
+                headers.push_back(cmpctblock.header);
+                vHeadersMsg << headers;
                 fRevertToHeaderProcessing = true;
             }
         }
@@ -2814,12 +2819,7 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             return ProcessMessage(pfrom, NetMsgType::BLOCKTXN, blockTxnMsg, nTimeReceived, chainparams, connman, interruptMsgProc, enable_bip61);
 
         if (fRevertToHeaderProcessing) {
-            // Headers received from HB compact block peers are permitted to be
-            // relayed before full validation (see BIP 152), so we don't want to disconnect
-            // the peer if the header turns out to be for an invalid block.
-            // Note that if a peer tries to build on an invalid chain, that
-            // will be detected and the peer will be banned.
-            return ProcessHeadersMessage(pfrom, connman, {cmpctblock.header}, chainparams, /*via_compact_block=*/true);
+            return ProcessMessage(pfrom, NetMsgType::HEADERS, vHeadersMsg, nTimeReceived, chainparams, connman, interruptMsgProc, enable_bip61);
         }
 
         if (fBlockReconstructed) {
@@ -3647,7 +3647,7 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
         bool fFetch = state.fPreferredDownload || (nPreferredDownload == 0 && !pto->fClient && !pto->fOneShot); // Download if this is a nice peer, or we have no nice peers and this one might do.
         if (!state.fSyncStarted && !pto->fClient && !fImporting && !fReindex) {
             // Only actively request headers from a single peer, unless we're close to today.
-            if ((nSyncStarted == 0 && fFetch) || pindexBestHeader->GetBlockTime() > GetAdjustedTime() - 24 * 60 * 60) {
+            if ((nSyncStarted < 3 && fFetch) || pindexBestHeader->GetBlockTime() > GetAdjustedTime() - 24 * 60 * 60) {
                 state.fSyncStarted = true;
                 state.nHeadersSyncTimeout = GetTimeMicros() + HEADERS_DOWNLOAD_TIMEOUT_BASE + HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER * (GetAdjustedTime() - pindexBestHeader->GetBlockTime())/(consensusParams.nPowTargetSpacing);
                 nSyncStarted++;
@@ -3716,14 +3716,14 @@ bool PeerLogicValidation::SendMessages(CNode* pto)
                     pBestIndex = pindex;
                     if (fFoundStartingHeader) {
                         // add this to the headers message
-                        vHeaders.push_back(pindex->GetBlockHeader());
+                        vHeaders.push_back(pindex->GetBlockHeader(consensusParams));
                     } else if (PeerHasHeader(&state, pindex)) {
                         continue; // keep looking for the first new block
                     } else if (pindex->pprev == nullptr || PeerHasHeader(&state, pindex->pprev)) {
                         // Peer doesn't have this header but they do have the prior one.
                         // Start sending headers.
                         fFoundStartingHeader = true;
-                        vHeaders.push_back(pindex->GetBlockHeader());
+                        vHeaders.push_back(pindex->GetBlockHeader(consensusParams));
                     } else {
                         // Peer doesn't have this header or the prior one -- nothing will
                         // connect, so bail out.

@@ -156,7 +156,7 @@ static bool rest_headers(HTTPRequest* req,
     case RetFormat::BINARY: {
         CDataStream ssHeader(SER_NETWORK, PROTOCOL_VERSION);
         for (const CBlockIndex *pindex : headers) {
-            ssHeader << pindex->GetBlockHeader();
+            ssHeader << pindex->GetBlockHeader(Params().GetConsensus());
         }
 
         std::string binaryHeader = ssHeader.str();
@@ -168,7 +168,7 @@ static bool rest_headers(HTTPRequest* req,
     case RetFormat::HEX: {
         CDataStream ssHeader(SER_NETWORK, PROTOCOL_VERSION);
         for (const CBlockIndex *pindex : headers) {
-            ssHeader << pindex->GetBlockHeader();
+            ssHeader << pindex->GetBlockHeader(Params().GetConsensus());
         }
 
         std::string strHex = HexStr(ssHeader.begin(), ssHeader.end()) + "\n";

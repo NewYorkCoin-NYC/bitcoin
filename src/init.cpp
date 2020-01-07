@@ -4,7 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #if defined(HAVE_CONFIG_H)
-#include <config/bitcoin-config.h>
+#include <config/newyorkcoin-config.h>
 #endif
 
 #include <init.h>
@@ -34,6 +34,7 @@
 #include <policy/policy.h>
 #include <policy/settings.h>
 #include <rpc/blockchain.h>
+#include <rpc/auxpow_miner.h>
 #include <rpc/register.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
@@ -74,6 +75,10 @@
 #include <zmq/zmqabstractnotifier.h>
 #include <zmq/zmqnotificationinterface.h>
 #include <zmq/zmqrpc.h>
+#endif
+
+#ifdef USE_SSE2
+#include <crypto/scrypt.h>
 #endif
 
 static bool fFeeEstimatesInitialized = false;
@@ -360,7 +365,6 @@ void SetupServerArgs()
 #if HAVE_SYSTEM
     gArgs.AddArg("-alertnotify=<cmd>", "Execute command when a relevant alert is received or we see a really long fork (%s in cmd is replaced by message)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
-    gArgs.AddArg("-assumevalid=<hex>", strprintf("If this block is in the chain assume that it and its ancestors are valid and potentially skip their script verification (0 to verify all, default: %s, testnet: %s)", defaultChainParams->GetConsensus().defaultAssumeValid.GetHex(), testnetChainParams->GetConsensus().defaultAssumeValid.GetHex()), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     gArgs.AddArg("-blocksdir=<dir>", "Specify directory to hold blocks subdirectory for *.dat files (default: <datadir>)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #if HAVE_SYSTEM
     gArgs.AddArg("-blocknotify=<cmd>", "Execute command when the best block changes (%s in cmd is replaced by block hash)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1301,6 +1305,11 @@ bool AppInitMain(InitInterfaces& interfaces)
         if (!AppInitServers())
             return InitError(_("Unable to start HTTP server. See debug log for details.").translated);
     }
+
+#if defined(USE_SSE2)
+    std::string sse2detect = scrypt_detect_sse2();
+    LogPrintf("%s\n", sse2detect);
+#endif
 
     // ********************************************************* Step 5: verify wallet database integrity
     for (const auto& client : interfaces.chain_clients) {

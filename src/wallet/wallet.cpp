@@ -1065,17 +1065,12 @@ void CWallet::SetUsedDestinationState(const uint256& hash, unsigned int n, bool 
     }
 }
 
-bool CWallet::IsUsedDestination(const CTxDestination& dst) const
-{
-    LOCK(cs_wallet);
-    return ::IsMine(*this, dst) && GetDestData(dst, "used", nullptr);
-}
-
 bool CWallet::IsUsedDestination(const uint256& hash, unsigned int n) const
 {
+    AssertLockHeld(cs_wallet);
     CTxDestination dst;
     const CWalletTx* srctx = GetWalletTx(hash);
-    return srctx && ExtractDestination(srctx->tx->vout[n].scriptPubKey, dst) && IsUsedDestination(dst);
+    return srctx && ExtractDestination(srctx->tx->vout[n].scriptPubKey, dst);
 }
 
 bool CWallet::AddToWallet(const CWalletTx& wtxIn, bool fFlushOnClose)
@@ -4663,8 +4658,9 @@ int CWalletTx::GetBlocksToMaturity(interfaces::Chain::Lock& locked_chain) const
     if (!IsCoinBase())
         return 0;
     int chain_depth = GetDepthInMainChain(locked_chain);
+    int nHeight = ::ChainActive().Height();
     assert(chain_depth >= 0); // coinbase tx should not be conflicted
-    return std::max(0, (COINBASE_MATURITY+1) - chain_depth);
+    return std::max(0, (Params().GetConsensus(nHeight).CoinbaseMaturity()+1) - chain_depth);
 }
 
 bool CWalletTx::IsImmatureCoinBase(interfaces::Chain::Lock& locked_chain) const

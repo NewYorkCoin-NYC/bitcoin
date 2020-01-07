@@ -27,19 +27,15 @@
 #include <queue>
 #include <utility>
 
-int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev)
+void UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParams, const CBlockIndex* pindexPrev)
 {
-    int64_t nOldTime = pblock->nTime;
-    int64_t nNewTime = std::max(pindexPrev->GetMedianTimePast()+1, GetAdjustedTime());
-
-    if (nOldTime < nNewTime)
-        pblock->nTime = nNewTime;
+    pblock->nTime = std::max(pindexPrev->GetMedianTimePast()+1, GetAdjustedTime());
 
     // Updating time can change work required on testnet:
-    if (consensusParams.fPowAllowMinDifficultyBlocks)
+    if(consensusParams.fPowAllowMinDifficultyBlocks && consensusParams.nHeightEffective == 0)
+        pblock->nBits = GetNextWorkRequiredLegacy(pindexPrev, pblock, consensusParams);
+    else if (consensusParams.fPowAllowMinDifficultyBlocks)
         pblock->nBits = GetNextWorkRequired(pindexPrev, pblock, consensusParams);
-
-    return nNewTime - nOldTime;
 }
 
 BlockAssembler::Options::Options() {
@@ -76,6 +72,7 @@ void BlockAssembler::resetBlock()
     inBlock.clear();
 
     // Reserve space for coinbase tx
+    nBlockSize = 1000;
     nBlockWeight = 4000;
     nBlockSigOpsCost = 400;
     fIncludeWitness = false;
@@ -90,6 +87,8 @@ Optional<int64_t> BlockAssembler::m_last_block_weight{nullopt};
 
 std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn)
 {
+    const CChainParams& chainparams = Params();
+
     int64_t nTimeStart = GetTimeMicros();
 
     resetBlock();
@@ -109,12 +108,17 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     CBlockIndex* pindexPrev = ::ChainActive().Tip();
     assert(pindexPrev != nullptr);
     nHeight = pindexPrev->nHeight + 1;
+    const Consensus::Params& consensusParams = chainparams.GetConsensus();
 
-    pblock->nVersion = ComputeBlockVersion(pindexPrev, chainparams.GetConsensus());
+    const int32_t nChainId = chainparams.GetConsensus().nAuxpowChainId;
+    // FIXME: Active version bits after the always-auxpow fork!
+    //const int32_t nVersion = ComputeBlockVersion(pindexPrev, chainparams.GetConsensus());
+    const int32_t nVersion = 4;
+    pblock->SetBaseVersion(nVersion, nChainId);
     // -regtest only: allow overriding block.nVersion with
     // -blockversion=N to test forking scenarios
     if (chainparams.MineBlocksOnDemand())
-        pblock->nVersion = gArgs.GetArg("-blockversion", pblock->nVersion);
+        pblock->SetBaseVersion(gArgs.GetArg("-blockversion", pblock->GetBaseVersion()), nChainId);
 
     pblock->nTime = GetAdjustedTime();
     const int64_t nMedianTimePast = pindexPrev->GetMedianTimePast();
@@ -149,18 +153,22 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
     coinbaseTx.vin[0].prevout.SetNull();
     coinbaseTx.vout.resize(1);
     coinbaseTx.vout[0].scriptPubKey = scriptPubKeyIn;
-    coinbaseTx.vout[0].nValue = nFees + GetBlockSubsidy(nHeight, chainparams.GetConsensus());
+    coinbaseTx.vout[0].nValue = GetBlockSubsidy(nHeight, nFees, pblock->hashPrevBlock, Params().GetConsensus());
     coinbaseTx.vin[0].scriptSig = CScript() << nHeight << OP_0;
     pblock->vtx[0] = MakeTransactionRef(std::move(coinbaseTx));
     pblocktemplate->vchCoinbaseCommitment = GenerateCoinbaseCommitment(*pblock, pindexPrev, chainparams.GetConsensus());
     pblocktemplate->vTxFees[0] = -nFees;
 
-    LogPrintf("CreateNewBlock(): block weight: %u txs: %u fees: %ld sigops %d\n", GetBlockWeight(*pblock), nBlockTx, nFees, nBlockSigOpsCost);
+    uint64_t nSerializeSize = GetSerializeSize(*pblock, PROTOCOL_VERSION);
+    LogPrintf("CreateNewBlock(): total size: %u block weight: %u txs: %u fees: %ld sigops %d\n", nSerializeSize, GetBlockWeight(*pblock), nBlockTx, nFees, nBlockSigOpsCost);
 
     // Fill in header
     pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
-    UpdateTime(pblock, chainparams.GetConsensus(), pindexPrev);
-    pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock, chainparams.GetConsensus());
+    UpdateTime(pblock, consensusParams, pindexPrev);
+    if(consensusParams.fAllowLegacyBlocks)
+      pblock->nBits          = GetNextWorkRequiredLegacy(pindexPrev, pblock, consensusParams);
+    else
+      pblock->nBits          = GetNextWorkRequired(pindexPrev, pblock, consensusParams);
     pblock->nNonce         = 0;
     pblocktemplate->vTxSigOpsCost[0] = WITNESS_SCALE_FACTOR * GetLegacySigOpCount(*pblock->vtx[0]);
 
@@ -202,6 +210,8 @@ bool BlockAssembler::TestPackage(uint64_t packageSize, int64_t packageSigOpsCost
 // - transaction finality (locktime)
 // - premature witness (in case segwit transactions are added to mempool before
 //   segwit activation)
+// - serialized size (in case -blockmaxsize is in use)
+// - Newyorkcoin maturity conditions
 bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& package)
 {
     for (CTxMemPool::txiter it : package) {

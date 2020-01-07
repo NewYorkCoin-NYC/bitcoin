@@ -6,6 +6,7 @@
 #include <validation.h>
 
 #include <arith_uint256.h>
+#include <auxpow.h>
 #include <chain.h>
 #include <chainparams.h>
 #include <checkqueue.h>
@@ -52,9 +53,13 @@
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/thread.hpp>
+#include <boost/random/mersenne_twister.hpp>
+#include <boost/random/uniform_int.hpp>
+
+typedef std::vector<unsigned char> valtype;
 
 #if defined(NDEBUG)
-# error "Bitcoin cannot be compiled without assertions."
+# error "Newyorkcoin cannot be compiled without assertions."
 #endif
 
 #define MICRO 0.000001
@@ -113,6 +118,7 @@ uint256 g_best_block;
 int nScriptCheckThreads = 0;
 std::atomic_bool fImporting(false);
 std::atomic_bool fReindex(false);
+bool fSyncQuickly = true;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fRequireStandard = true;
@@ -152,6 +158,11 @@ namespace {
     /** Dirty block file entries. */
     std::set<int> setDirtyFileInfo;
 } // anon namespace
+
+bool OkToSyncQuick()
+{
+    return fSyncQuickly;
+}
 
 CBlockIndex* LookupBlockIndex(const uint256& hash)
 {
@@ -692,7 +703,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     m_pool.ApplyDelta(hash, nModifiedFees);
 
     // Keep track of transactions that spend a coinbase, which we re-scan
-    // during reorgs to ensure COINBASE_MATURITY is still met.
+    // during reorgs to ensure Params().GetConsensus().CoinbaseMaturity() is still met.
     bool fSpendsCoinbase = false;
     for (const CTxIn &txin : tx.vin) {
         const Coin &coin = m_view.AccessCoin(txin.prevout);
@@ -1145,7 +1156,11 @@ static bool WriteBlockToDisk(const CBlock& block, FlatFilePos& pos, const CMessa
     return true;
 }
 
-bool ReadBlockFromDisk(CBlock& block, const FlatFilePos& pos, const Consensus::Params& consensusParams)
+/* Generic implementation of block reading that can handle
+   both a block and its header.  */
+
+template<typename T>
+static bool ReadBlockOrHeader(T& block, const FlatFilePos& pos, const Consensus::Params& consensusParams)
 {
     block.SetNull();
 
@@ -1163,13 +1178,14 @@ bool ReadBlockFromDisk(CBlock& block, const FlatFilePos& pos, const Consensus::P
     }
 
     // Check the header
-    if (!CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
+    if (!CheckAuxPowProofOfWork(block, consensusParams))
         return error("ReadBlockFromDisk: Errors in block header at %s", pos.ToString());
 
     return true;
 }
 
-bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams)
+template<typename T>
+static bool ReadBlockOrHeader(T& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams)
 {
     FlatFilePos blockPos;
     {
@@ -1177,12 +1193,27 @@ bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus
         blockPos = pindex->GetBlockPos();
     }
 
-    if (!ReadBlockFromDisk(block, blockPos, consensusParams))
+    if (!ReadBlockOrHeader(block, blockPos, consensusParams))
         return false;
     if (block.GetHash() != pindex->GetBlockHash())
         return error("ReadBlockFromDisk(CBlock&, CBlockIndex*): GetHash() doesn't match index for %s at %s",
                 pindex->ToString(), pindex->GetBlockPos().ToString());
     return true;
+}
+
+bool ReadBlockFromDisk(CBlock& block, const FlatFilePos& pos, const Consensus::Params& consensusParams)
+{
+    return ReadBlockOrHeader(block, pos, consensusParams);
+}
+
+bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams)
+{
+    return ReadBlockOrHeader(block, pindex, consensusParams);
+}
+
+bool ReadBlockHeaderFromDisk(CBlockHeader& block, const CBlockIndex* pindex, const Consensus::Params& consensusParams)
+{
+    return ReadBlockOrHeader(block, pindex, consensusParams);
 }
 
 bool ReadRawBlockFromDisk(std::vector<uint8_t>& block, const FlatFilePos& pos, const CMessageHeader::MessageStartChars& message_start)
@@ -1231,16 +1262,131 @@ bool ReadRawBlockFromDisk(std::vector<uint8_t>& block, const CBlockIndex* pindex
     return ReadRawBlockFromDisk(block, block_pos, message_start);
 }
 
-CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
+int static generateMTRandom(unsigned int s, int range)
 {
-    int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
-    // Force block reward to zero when right shift is undefined.
-    if (halvings >= 64)
-        return 0;
+    boost::mt19937 gen(s);
+    boost::uniform_int<> dist(1, range);
+    return dist(gen);
+}
 
-    CAmount nSubsidy = 50 * COIN;
-    // Subsidy is cut in half every 210,000 blocks which will occur approximately every 4 years.
-    nSubsidy >>= halvings;
+CAmount GetBlockSubsidy(int nHeight, const CAmount& nFees, uint256 prevHash, const Consensus::Params& consensusParams)
+{
+    int64_t maxSubsidy = 10000 * COIN;
+    int64_t minSubsidy = 50 * COIN;
+    int64_t nSubsidy = maxSubsidy;
+
+    std::string cseed_str = prevHash.ToString().substr(7, 7);
+    const char* cseed = cseed_str.c_str();
+
+    long seed = hex2long(cseed);
+    int rand = generateMTRandom(seed, 999999);
+    int rand1 = 0;
+    int rand2 = 0;
+    int rand3 = 0;
+    int rand4 = 0;
+    int rand5 = 0;
+
+    // Start of botched pre-mine
+    // The following if/else block is overridden by the subsequent if/else block
+    // Leaving this for historical accuracy
+    if (consensusParams.nHeightEffective == 0)
+    {
+        if (nHeight == 1) {
+            nSubsidy = 97000000 * COIN;
+        }
+        else if (nHeight < 101) {
+            nSubsidy = 1 * COIN;
+        }
+        // End of botched pre-mine
+
+        if (nHeight < 100000) {
+            nSubsidy = (1 + rand) * COIN;
+        }
+        else if (nHeight < 200000) {
+            cseed_str = prevHash.ToString().substr(7, 7);
+            cseed = cseed_str.c_str();
+            seed = hex2long(cseed);
+            rand1 = generateMTRandom(seed, 499999);
+            nSubsidy = (1 + rand1) * COIN;
+        }
+        else if (nHeight < 300000) {
+            cseed_str = prevHash.ToString().substr(6, 7);
+            cseed = cseed_str.c_str();
+            seed = hex2long(cseed);
+            rand2 = generateMTRandom(seed, 249999);
+            nSubsidy = (1 + rand2) * COIN;
+        }
+        else if (nHeight < 400000) {
+            cseed_str = prevHash.ToString().substr(7, 7);
+            cseed = cseed_str.c_str();
+            seed = hex2long(cseed);
+            rand3 = generateMTRandom(seed, 124999);
+            nSubsidy = (1 + rand3) * COIN;
+        }
+        else if (nHeight < 500000) {
+            cseed_str = prevHash.ToString().substr(7, 7);
+            cseed = cseed_str.c_str();
+            seed = hex2long(cseed);
+            rand4 = generateMTRandom(seed, 62499);
+            nSubsidy = (1 + rand4) * COIN;
+        }
+        else if (nHeight < 600000) {
+            cseed_str = prevHash.ToString().substr(6, 7);
+            cseed = cseed_str.c_str();
+            seed = hex2long(cseed);
+            rand5 = generateMTRandom(seed, 31249);
+            nSubsidy = (1 + rand5) * COIN;
+        }
+        else if (nHeight > 4800000) { // 2018-4-14 - Block height 4,234,899
+            nSubsidy = maxSubsidy / 2; // 250,000 blocks is ~3 months based on data from 2018
+        }
+        else if (nHeight > 5000000) {
+            nSubsidy = maxSubsidy / 4;
+        }
+        else if (nHeight > 5500000) {
+            nSubsidy = maxSubsidy / 8;
+        }
+        else if (nHeight > 6000000) {
+            nSubsidy = maxSubsidy / 16;
+        }
+        else if (nHeight > 6500000) {
+            nSubsidy = minSubsidy * 2;
+        }
+        else if (nHeight > 7000000) {
+            nSubsidy = minSubsidy;
+        }
+    }
+    else {
+        int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
+
+        if (nHeight < (9 * consensusParams.nSubsidyHalvingInterval)) // < 4,500,000
+        {
+            return 10000 * COIN;
+        }
+        else if (nHeight < (10 * consensusParams.nSubsidyHalvingInterval)) // < 5,000,000
+        {
+            return 5000 * COIN;
+        }
+        else if (nHeight < (11 * consensusParams.nSubsidyHalvingInterval)) // < 5,500,000
+        {
+            return 2500 * COIN;
+        }
+        else if (nHeight < (12 * consensusParams.nSubsidyHalvingInterval)) //< 6,000,000
+        {
+            return 1250 * COIN;
+        }
+        else if (nHeight < (13 * consensusParams.nSubsidyHalvingInterval)) // < 6,500,000
+        {
+            return 625 * COIN;
+        }
+        else if (nHeight < (14 * consensusParams.nSubsidyHalvingInterval)) // < 7,000,000
+        {
+            return 100 * COIN;
+        }
+        else {
+            return 50 * COIN;
+        }
+    }
     return nSubsidy;
 }
 
@@ -2171,8 +2317,14 @@ bool CChainState::ConnectBlock(const CBlock& block, CValidationState& state, CBl
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
 
-    CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, chainparams.GetConsensus());
-    if (block.vtx[0]->GetValueOut() > blockReward)
+    //! To validate early awards
+    uint256 prevHash;
+    if(pindex->pprev){
+        prevHash = pindex->pprev->GetBlockHash();
+    }
+ 
+    CAmount blockReward = GetBlockSubsidy(pindex->nHeight, nFees, prevHash, chainparams.GetConsensus());
+    if (block.vtx[0]->GetValueOut() > blockReward + nFees)
         return state.Invalid(ValidationInvalidReason::CONSENSUS,
                          error("ConnectBlock(): coinbase pays too much (actual=%d vs limit=%d)",
                                block.vtx[0]->GetValueOut(), blockReward),
@@ -2874,7 +3026,7 @@ bool CChainState::ActivateBestChain(CValidationState &state, const CChainParams&
         if (ShutdownRequested())
             break;
     } while (pindexNewTip != pindexMostWork);
-    CheckBlockIndex(chainparams.GetConsensus());
+    if (!OkToSyncQuick()) CheckBlockIndex(chainparams.GetConsensus());
 
     // Write changes periodically to disk, after relay.
     if (!FlushStateToDisk(chainparams, state, FlushStateMode::PERIODIC)) {
@@ -3016,7 +3168,7 @@ bool CChainState::InvalidateBlock(CValidationState& state, const CChainParams& c
         to_mark_failed = invalid_walk_tip;
     }
 
-    CheckBlockIndex(chainparams.GetConsensus());
+    if (!OkToSyncQuick()) CheckBlockIndex(chainparams.GetConsensus());
 
     {
         LOCK(cs_main);
@@ -3125,6 +3277,11 @@ CBlockIndex* BlockManager::AddToBlockIndex(const CBlockHeader& block)
     }
     pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
     pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(*pindexNew);
+    // NewYorkCoin: Add AuxPoW
+    if (block.IsAuxpow()) {
+        pindexNew->pauxpow = block.auxpow;
+        assert(NULL != pindexNew->pauxpow.get());
+    }
     pindexNew->RaiseValidity(BLOCK_VALID_TREE);
     if (pindexBestHeader == nullptr || pindexBestHeader->nChainWork < pindexNew->nChainWork)
         pindexBestHeader = pindexNew;
@@ -3252,11 +3409,18 @@ static bool FindUndoPos(CValidationState &state, int nFile, FlatFilePos &pos, un
     return true;
 }
 
-static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
+static bool CheckBlockHeader(const CBlockHeader& block, CValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = false)
 {
     // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
-        return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "high-hash", "proof of work failed");
+    // We don't have block height as this is called without context (i.e. without
+    // knowing the previous block), but that's okay, as the checks done are permissive
+    // (i.e. doesn't check work limit or whether AuxPoW is enabled)
+    if (fCheckPOW && !CheckAuxPowProofOfWork(block, Params().GetConsensus(0)))
+        return state.Invalid(ValidationInvalidReason::CONSENSUS, false, REJECT_INVALID, "high-hash", "proof of work failed");
+
+    // Check timestamp
+    if (block.GetBlockTime() > GetAdjustedTime() + 2 * 60 * 60)
+        return state.Invalid(ValidationInvalidReason::CONSENSUS, false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
 
     return true;
 }
@@ -3270,8 +3434,9 @@ bool CheckBlock(const CBlock& block, CValidationState& state, const Consensus::P
 
     // Check that the header is valid (particularly PoW).  This is mostly
     // redundant with the call in AcceptBlockHeader.
-    if (!CheckBlockHeader(block, state, consensusParams, fCheckPOW))
-        return false;
+    if (!OkToSyncQuick())
+        if (!CheckBlockHeader(block, state, consensusParams, fCheckPOW))
+            return false;
 
     // Check the merkle root.
     if (fCheckMerkleRoot) {
@@ -3414,11 +3579,38 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
 {
     assert(pindexPrev != nullptr);
     const int nHeight = pindexPrev->nHeight + 1;
+    const Consensus::Params& consensusParams = params.GetConsensus(nHeight);
+
+    // Test if quicksync is appropriate
+    if (nHeight > QUICKSYNC_UNTIL_HEIGHT)
+        fSyncQuickly = false;
+
+    // Disallow legacy blocks after merge-mining start.
+    if (!consensusParams.fAllowLegacyBlocks && block.IsLegacy())
+        return state.Invalid(ValidationInvalidReason::CONSENSUS,
+                             error("%s : legacy block after auxpow start at height %d, parameters effective from %d",
+                             __func__, pindexPrev->nHeight + 1, consensusParams.nHeightEffective), REJECT_INVALID, "late-legacy-block");
+
+    // Disallow AuxPow blocks before it is activated.
+    if (!consensusParams.fAllowAuxPow && block.IsAuxpow())
+        return state.Invalid(ValidationInvalidReason::CONSENSUS,
+                             error("%s : auxpow blocks are not allowed at height %d, parameters effective from %d",
+                             __func__, pindexPrev->nHeight + 1, consensusParams.nHeightEffective), REJECT_INVALID, "early-auxpow-block");
 
     // Check proof of work
-    const Consensus::Params& consensusParams = params.GetConsensus();
-    if (block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))
-        return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_INVALID, "bad-diffbits", "incorrect proof of work");
+    // Legacy
+    if (consensusParams.fAllowLegacyBlocks)
+    { 
+        if((unsigned int)block.nBits != GetNextWorkRequiredLegacy(pindexPrev, &block, consensusParams))
+                 return state.Invalid(ValidationInvalidReason::CONSENSUS, error("%s : incorrect proof of work (expected %08x, got %08x)",
+                                      __func__, GetNextWorkRequiredLegacy(pindexPrev, &block, consensusParams), block.nBits), REJECT_INVALID, "bad-diffbits");
+    }
+    else
+    {
+        if(block.nBits != GetNextWorkRequired(pindexPrev, &block, consensusParams))
+                 return state.Invalid(ValidationInvalidReason::CONSENSUS, error("%s : incorrect proof of work (GetNextWorkRequired expected %08x, got %08x)",
+                                      __func__, GetNextWorkRequired(pindexPrev, &block, consensusParams), block.nBits), REJECT_INVALID, "bad-diffbits");
+    }
 
     // Check against checkpoints
     if (fCheckpointsEnabled) {
@@ -3439,12 +3631,9 @@ static bool ContextualCheckBlockHeader(const CBlockHeader& block, CValidationSta
         return state.Invalid(ValidationInvalidReason::BLOCK_TIME_FUTURE, false, REJECT_INVALID, "time-too-new", "block timestamp too far in the future");
 
     // Reject outdated version blocks when 95% (75% on testnet) of the network has upgraded:
-    // check for version 2, 3 and 4 upgrades
-    if((block.nVersion < 2 && nHeight >= consensusParams.BIP34Height) ||
-       (block.nVersion < 3 && nHeight >= consensusParams.BIP66Height) ||
-       (block.nVersion < 4 && nHeight >= consensusParams.BIP65Height))
-            return state.Invalid(ValidationInvalidReason::BLOCK_INVALID_HEADER, false, REJECT_OBSOLETE, strprintf("bad-version(0x%08x)", block.nVersion),
-                                 strprintf("rejected nVersion=0x%08x block", block.nVersion));
+    if((block.GetBaseVersion() < 3 && nHeight >= consensusParams.BIP66Height) ||
+       (block.GetBaseVersion() < 4 && nHeight >= consensusParams.BIP65Height))
+        return state.Invalid(ValidationInvalidReason::CONSENSUS, false, REJECT_OBSOLETE, "bad-version", "rejected nVersion");
 
     return true;
 }
@@ -3555,7 +3744,7 @@ bool BlockManager::AcceptBlockHeader(const CBlockHeader& block, CValidationState
             return true;
         }
 
-        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
+        if (!CheckBlockHeader(block, state, chainparams.GetConsensus()) && !OkToSyncQuick())
             return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 
         // Get prev block index
@@ -3675,7 +3864,7 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CVali
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
 
     bool accepted_header = m_blockman.AcceptBlockHeader(block, state, chainparams, &pindex);
-    CheckBlockIndex(chainparams.GetConsensus());
+    if (!OkToSyncQuick()) CheckBlockIndex(chainparams.GetConsensus());
 
     if (!accepted_header)
         return false;
@@ -3713,7 +3902,7 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CVali
     }
 
     if (!CheckBlock(block, state, chainparams.GetConsensus()) ||
-        !ContextualCheckBlock(block, state, chainparams.GetConsensus(), pindex->pprev)) {
+        !ContextualCheckBlock(block, state, chainparams.GetConsensus(pindex->nHeight), pindex->pprev)) {
         assert(IsBlockReason(state.GetReason()));
         if (state.IsInvalid() && state.GetReason() != ValidationInvalidReason::BLOCK_MUTATED) {
             pindex->nStatus |= BLOCK_FAILED_VALID;
@@ -3742,7 +3931,7 @@ bool CChainState::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CVali
 
     FlushStateToDisk(chainparams, state, FlushStateMode::NONE);
 
-    CheckBlockIndex(chainparams.GetConsensus());
+    if (!OkToSyncQuick()) CheckBlockIndex(chainparams.GetConsensus());
 
     return true;
 }
@@ -4484,7 +4673,7 @@ bool CChainState::RewindBlockIndex(const CChainParams& params)
             // no tip due to m_chain being empty!
             PruneBlockIndexCandidates();
 
-            CheckBlockIndex(params.GetConsensus());
+            if (!OkToSyncQuick()) CheckBlockIndex(params.GetConsensus());
         }
     }
 

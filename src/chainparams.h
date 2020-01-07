@@ -57,10 +57,27 @@ public:
         MAX_BASE58_TYPES
     };
 
+    const Consensus::Params& GetConsensus(uint32_t nTargetHeight) const {
+        return *GetConsensus(nTargetHeight, pConsensusRoot);
+    }
+
+    Consensus::Params *GetConsensus(uint32_t nTargetHeight, Consensus::Params *pRoot) const {
+        if (nTargetHeight < pRoot -> nHeightEffective && pRoot -> pLeft != NULL) {
+            return GetConsensus(nTargetHeight, pRoot -> pLeft);
+        } else if (nTargetHeight > pRoot -> nHeightEffective && pRoot -> pRight != NULL) {
+            Consensus::Params *pCandidate = GetConsensus(nTargetHeight, pRoot -> pRight);
+            if (pCandidate->nHeightEffective <= nTargetHeight) {
+                return pCandidate;
+            }
+        }
+
+        // No better match below the target height
+        return pRoot;
+    }
+
     const Consensus::Params& GetConsensus() const { return consensus; }
     const CMessageHeader::MessageStartChars& MessageStart() const { return pchMessageStart; }
     int GetDefaultPort() const { return nDefaultPort; }
-
     const CBlock& GenesisBlock() const { return genesis; }
     /** Default value for -checkmempool and -checkblockindex argument */
     bool DefaultConsistencyChecks() const { return fDefaultConsistencyChecks; }
@@ -88,6 +105,7 @@ protected:
     CChainParams() {}
 
     Consensus::Params consensus;
+    Consensus::Params *pConsensusRoot; // Binary search tree root
     CMessageHeader::MessageStartChars pchMessageStart;
     int nDefaultPort;
     uint64_t nPruneAfterHeight;
@@ -124,5 +142,10 @@ const CChainParams &Params();
  * @throws std::runtime_error when the chain is not supported.
  */
 void SelectParams(const std::string& chain);
+
+/**
+ * Allows modifying the Version Bits regtest parameters.
+ */
+void UpdateVersionBitsParameters(Consensus::DeploymentPos d, int64_t nStartTime, int64_t nTimeout);
 
 #endif // BITCOIN_CHAINPARAMS_H
